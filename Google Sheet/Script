@@ -1,0 +1,48 @@
+// Replace 'YOUR_SPREADSHEET_ID' with your actual spreadsheet ID
+var spreadsheetId = 'YOUR_SPREADSHEET_ID';
+// Replace 'Sheet1' with the name of your sheet
+var sheetName = 'sheet1';
+// Set the initial row to start appending
+var startRow = 7;
+
+function getNextRow(sheet, column) {
+  var values = sheet.getRange(column + startRow + ":" + column + sheet.getLastRow()).getValues().flat();
+  for (var i = 0; i < values.length; i++) {
+    if (values[i] === "") {
+      return i + startRow;
+    }
+  }
+  return sheet.getLastRow() + 1;
+}
+
+function doPost(e) {
+  try {
+    if (e && e.parameter && e.parameter.card_id) {
+      var sheet = SpreadsheetApp.openById(spreadsheetId).getSheetByName(sheetName);
+
+      // Extract RFID card ID from the request
+      var cardId = e.parameter.card_id;
+
+      // Log the received card ID
+      console.log('Received card ID: ' + cardId);
+
+      // Use the custom function getNextRow to determine the next row
+      var nextRow = getNextRow(sheet, "AT");
+
+      // Update the specific cell with the card ID in the next empty row starting from row 7
+      sheet.getRange(nextRow, sheet.getRange("AT1").getColumn()).setValue(cardId);
+
+      // Log a success message
+      console.log('Card ID ' + cardId + ' added to the sheet at row AT' + nextRow);
+
+      // Return a response (optional)
+      return ContentService.createTextOutput('Card ID ' + cardId + ' added to the sheet at row AT' + nextRow);
+    } else {
+      console.error('Invalid request: Missing card_id parameter');
+      return ContentService.createTextOutput('Invalid request: Missing card_id parameter');
+    }
+  } catch (error) {
+    console.error('Error processing request:', error);
+    return ContentService.createTextOutput('Error processing request');
+  }
+}

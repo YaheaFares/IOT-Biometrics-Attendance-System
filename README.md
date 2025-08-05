@@ -1,6 +1,6 @@
 # IOT-Biometrics-Attendance-System
 
-📌 Project Overview
+# 📌 Project Overview
 This is an IoT-based Biometrics Attendance System developed using the ESP32 Dev Module, Fingerprint Sensor, RFID Reader, and a TFT ILI9341 Display. It allows users to mark their attendance through either fingerprint authentication or an RFID card, and logs the data directly into a Google Sheet in real-time via the internet.
 
 The goal is to offer a simple, reliable, and remotely accessible attendance solution for schools, offices, or any environment where efficient tracking is needed. The attendance log is stored in a Google Sheet, allowing the admin to monitor records anytime, from anywhere.

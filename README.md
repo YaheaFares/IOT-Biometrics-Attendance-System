@@ -6,8 +6,8 @@
    The goal is to offer a simple, reliable, and remotely accessible attendance solution for schools, offices, or any environment where efficient tracking is needed. The        attendance log is stored in a Google Sheet, allowing the admin to monitor records anytime, from anywhere.
 
 # 🔧 Features :
-   - 📶 IoT-Enabled: Connected to the internet for live attendance syncing.
-   - 🛂 Dual Authentication: Accepts both fingerprint and RFID for flexible user input.
+- 📶 IoT-Enabled: Connected to the internet for live attendance syncing.
+- 🛂 Dual Authentication: Accepts both fingerprint and RFID for flexible user input.
    - 🧠 Real-time Logging: Automatically updates attendance data to Google Sheets.
    - 🌐 Remote Access: Admin can access the attendance records from any location using Google Sheets.
    - 💾 Non-volatile Memory: Stores and recognizes users even after a reboot (can be extended with EEPROM or SPIFFS).

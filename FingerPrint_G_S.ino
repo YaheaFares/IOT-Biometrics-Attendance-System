@@ -1,0 +1,1128 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <EEPROM.h>
+
+/*
+  The TFT_eSPI library incorporates an Adafruit_GFX compatible
+  button handling class, this sketch is based on the Arduin-o-phone
+  example.
+
+  This example diplays a keypad where numbers can be entered and
+  send to the Serial Monitor window.
+
+  The sketch has been tested on the ESP8266 (which supports SPIFFS)
+
+  The minimum screen size is 320 x 240 as that is the keypad size.
+*/
+
+// The SPIFFS (FLASH filing system) is used to hold touch screen
+// calibration data
+
+//Includes
+#include "FS.h"
+#include <SPI.h>
+#include <TFT_eSPI.h>      // Hardware-specific library
+#include <Adafruit_Fingerprint.h>
+#include <HTTPClient.h>
+#include <SD.h>
+
+
+#define mySerial Serial2
+
+#define ENABLE 1
+#define DISABLE 0
+
+#define SSID "WE8DA83E"
+#define PASS_KEY "ka027528"
+#define WIFI DISABLE
+//-----------------------------------------------------------------------------
+const char *scriptUrl = "https://script.google.com/macros/s/AKfycbxOY47_CeKkZXBw7JdxYx2LDevzrxjMActY5D-eOVuymx1k3wbN3B7JKXN9itwAYwOz/exec";
+//-----------------------------------------------------------------------------
+
+
+//MAIN PROGRAM MACROS
+#define ADD_MODE 0
+#define DEL_MODE 1
+#define SCAN_MODE 2
+#define NORMAL_MODE 3
+char PASS[] = "1234";
+
+//#define PASS "5454"
+#define TOTAL_NUM_OF_USERS 63
+
+//MAIN PROGRAM GVs
+uint8_t currentMode = NORMAL_MODE;
+uint32_t userID;
+uint32_t userIDs[63];
+int arraySize =63;
+int usersCounter = 0;
+int sd_counter=0;
+
+// Define the new SPI pins
+const int cs_sd = 5; // CS pin
+const int cs_tft = 21; // CS pin
+
+#define count_address 254
+#define write_address 255
+
+unsigned long cardId = 0;
+
+int del_button=13;
+
+TFT_eSPI tft = TFT_eSPI(); // Invoke custom library
+
+// This is the file name used to store the calibration data
+// You can change this to create new calibration files.
+// The SPIFFS file name must start with "/".
+#define CALIBRATION_FILE "/TouchCalData1"
+
+// Set REPEAT_CAL to true instead of false to run calibration
+// again, otherwise it will only be done once.
+// Repeat calibration if you change the screen rotation.
+#define REPEAT_CAL false
+
+
+// Keypad start position, key sizes and spacing
+#define KEY_X 40 // Centre of key
+#define KEY_Y 130
+#define KEY_W 62 // Width and height
+#define KEY_H 30
+#define KEY_SPACING_X 18 // X and Y gap
+#define KEY_SPACING_Y 10
+#define KEY_TEXTSIZE 1   // Font size multiplier
+
+// Using two fonts since numbers are nice when bold
+#define LABEL1_FONT &FreeSansOblique12pt7b // Key label font 1
+#define LABEL2_FONT &FreeSansBold12pt7b    // Key label font 2
+
+// Numeric display box size and location
+#define DISP_X 1
+#define DISP_Y 10
+#define DISP_W 238
+#define DISP_H 50
+#define DISP_TSIZE 3
+#define DISP_TCOLOR TFT_ORANGE
+//Font of Staus Message
+#define FF18 &FreeSans12pt7b
+#define GFXFF 1
+
+// Number length, buffer for storing it and character index
+#define NUM_LEN 12
+char numberBuffer[NUM_LEN + 1] = "";
+uint8_t numberIndex = 0;
+//----------------------------------------
+
+int addressToRead = 0; // Specify the starting address from where you want to read data
+int addressToWrite = 0; // Specify the starting address where you want to write data
+int currentAddress = 0; // Variable to keep track of the current EEPROM address
+int currentAddressRead =0;
+
+//----------------------------------------
+// We have a status line for messages
+#define STATUS_X 120 // Centred on this
+#define STATUS_Y 75
+//-----------------------------Sdcard_Module
+#define SD_CS_PIN 5 
+
+// Create 15 keys for the keypad
+char keyLabel[15][5] = {"Add", "Del", "Scan", "1", "2", "3", "4", "5", "6", "7", "8", "9", ">", "0", "Ok" };
+uint16_t keyColor[15] = {TFT_CYAN, TFT_RED, TFT_DARKGREEN,
+                         TFT_ORANGE, TFT_ORANGE, TFT_ORANGE,
+                         TFT_ORANGE, TFT_ORANGE, TFT_ORANGE,
+                         TFT_ORANGE, TFT_ORANGE, TFT_ORANGE,
+                         TFT_ORANGE, TFT_BROWN, TFT_ORANGE
+                        };
+
+
+//FP variables
+Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
+
+
+void touch_calibrate();
+void touch_input();
+int touch_input_while_start();
+void clearBuffer();
+void status(const char *msg);
+void drawKeypad();
+
+//--------------------------------------------------------------
+
+void readLongFromInternalEEPROM(int address);
+void writeLongToInternalEEPROM( uint32_t data);
+void readAllDataFromEEPROM(uint32_t dataArray[], int arraySize);
+
+
+void clearEEPROM() {
+  
+  
+  for (int i = 0; i < 256; i++) {
+    EEPROM.write(i, 0);
+
+  }
+Serial.println("EEprom cleared");
+status("Fingerprints cleared");
+  EEPROM.commit(); // Commit the changes to the EEPROM
+}
+//--------------------------------------------------------------
+
+
+int enroll();
+int checkFingerPrint();
+uint8_t deleteFingerprint(uint8_t id);
+int findIndex(uint32_t uid);
+
+int button;
+// Invoke the TFT_eSPI button class and create all the button objects
+TFT_eSPI_Button key[15];
+
+//------------------------------------------------------------------------------------------
+void drawWiFiSignal() {
+  // Set WiFi signal sign position and size
+  int signalX = DISP_X + DISP_W - 15;
+  int signalY = DISP_Y + DISP_H - 35;
+  int signalSize = 20;
+
+  // Draw WiFi signal sign
+  // tft.fillTriangle(signalX, signalY, signalX + signalSize, signalY, signalX + signalSize / 2, signalY - signalSize, TFT_RED);
+  // tft.fillCircle(signalX + signalSize / 2, signalY - signalSize, signalSize / 4, TFT_RED);
+
+  // Draw three arcs above the dot
+  int arcRadius = signalSize / 4;
+  int arcStartAngle = 110;
+  int arcEndAngle = 250;
+  int arcSpacing = 10;
+
+  int arcCenterX = signalX;
+  int arcCenterY = signalY;
+  
+  tft.fillCircle(arcCenterX, arcCenterY+3, 2, TFT_RED);
+  tft.drawArc(arcCenterX, arcCenterY, arcRadius+2,arcRadius, arcStartAngle, arcEndAngle, TFT_RED,TFT_RED,true);
+  tft.drawArc(arcCenterX, arcCenterY, arcRadius+8,arcRadius+6, arcStartAngle, arcEndAngle, TFT_RED,TFT_RED,true);
+}
+
+bool checkWiFiConnection() {
+  if (WiFi.status() == WL_CONNECTED) {
+    return true;
+    // Print additional output or perform actions here
+  }
+  return false;
+}
+
+
+ void connectToWiFi() {
+    WiFi.begin(SSID, PASS_KEY);
+    
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(1000);
+      Serial.println("Connecting to WiFi...");
+    }
+    
+    Serial.println("Connected to WiFi!");
+}
+
+
+
+//------------------------------------------------------------------------------------------
+void setup() {
+  // Use serial port
+  Serial.begin(115200);
+  EEPROM.begin(256); // Initialize the EEPROM with a size (512 bytes in this example)
+  pinMode(del_button, INPUT_PULLUP);
+
+  //clearEEPROM();
+
+  //userIDs[50];  
+   usersCounter = EEPROM.read(count_address);
+  Serial.print("usersCounter is =: ");
+  Serial.println(usersCounter);
+
+  readAllDataFromEEPROM(userIDs , arraySize);
+  Serial.print("Data read from internal EEPROM: ");
+  
+ Serial.println("Data read from internal EEPROM at the start of the program:");
+  for (int i = 0; i < arraySize; i++) {
+    Serial.print("Data ");
+    Serial.print(i + 1);
+    Serial.print(": ");
+    Serial.println(userIDs[i]);
+  }
+
+   currentAddress = EEPROM.read(write_address);
+  Serial.print("Address stop at: ");
+  Serial.println(currentAddress);
+ 
+  delay(3000); // Wait for 5 seconds before the next iteration
+  
+  WiFi.mode(WIFI_STA); //Optional
+  // Connect to WiFi
+  connectToWiFi();
+
+
+  //init finger print module
+  finger.begin(57600);
+
+  if (finger.verifyPassword()) {
+    Serial.println("Found fingerprint sensor!");
+  } else {
+    Serial.println("Did not find fingerprint sensor :(");
+    while (0) { delay(1); }
+  }
+
+  Serial.println(F("Reading sensor parameters"));
+  finger.getParameters();
+  Serial.print(F("Status: 0x")); Serial.println(finger.status_reg, HEX);
+  Serial.print(F("Sys ID: 0x")); Serial.println(finger.system_id, HEX);
+  Serial.print(F("Capacity: ")); Serial.println(finger.capacity);
+  Serial.print(F("Security level: ")); Serial.println(finger.security_level);
+  Serial.print(F("Device address: ")); Serial.println(finger.device_addr, HEX);
+  Serial.print(F("Packet len: ")); Serial.println(finger.packet_len);
+  Serial.print(F("Baud rate: ")); Serial.println(finger.baud_rate);
+
+
+  // Initialise the TFT screen
+  tft.init();
+
+  // Set the rotation before we calibrate
+  tft.setRotation(0);
+
+  // Calibrate the touch screen and retrieve the scaling factors
+  touch_calibrate();
+
+  // Clear the screen
+  tft.fillScreen(TFT_BLACK);
+
+  // Draw keypad background
+  tft.fillRect(0, 0, 240, 320, TFT_DARKGREY);
+
+  // Draw number display area and frame
+  tft.fillRect(DISP_X, DISP_Y, DISP_W, DISP_H, TFT_BLACK);
+  tft.drawRect(DISP_X, DISP_Y, DISP_W, DISP_H, TFT_BLUE);
+  
+  // wifi signal
+  //drawWiFiSignal();
+
+  // Draw keypad
+  drawKeypad();
+   if(checkWiFiConnection())
+  {
+    drawWiFiSignal();
+  }
+
+
+while(1)
+{
+    clearBuffer();
+    status("Enter password");
+    button= touch_input_while_start();
+    if(strncmp(numberBuffer, PASS, 4) == 0)
+            {
+                status("Correct pass");
+                delay(1000);
+                status("");
+                break;
+                
+            }
+
+     if(button == 1 || button == 2 || button == 3)
+            {
+                status("Access denied");
+                delay(1000);
+                status("");
+                                  
+            }          
+      else
+            {
+              status("Wrong PASS");
+              delay(1000);
+              status("Try Again");
+              delay(1000);
+              status("");
+            }
+}
+      
+clearBuffer();
+status("Program Started");
+delay(1000);
+
+
+}
+//------------------------------------------------------------------------------------------
+
+void loop(void) {
+
+  // Main program code
+      int index;
+      uint16_t t_x = 0, t_y = 0;
+      long dataToWrite=0;
+      String postData;
+      int httpResponseCode;
+      HTTPClient http;
+
+
+  //draw wifi upon connection
+  if(checkWiFiConnection())
+  {
+    drawWiFiSignal();
+  }
+/*
+  bool button_state = digitalRead(del_button);
+    delay(50);
+      if(button_state == LOW){
+      Serial.print("Pressed");
+      clearEEPROM();
+    }
+  */  
+
+  switch(currentMode)
+  {
+    case NORMAL_MODE:
+      //get input from touch screen
+    
+      touch_input();
+      break;
+    case ADD_MODE:
+      //print on screen add mode
+      status("Add mode");
+      delay(200);
+      //print on screen Enter password
+       
+        if(currentMode != ADD_MODE)
+        {
+          break;
+        }
+        //check if first 4 characters of password are correct and if they are correct then proceed
+      
+          clearBuffer();
+          status("Enter ID");
+          touch_input();
+          if(currentMode != ADD_MODE)
+          {
+            status("");
+            break;
+          }
+          userID = atoi(numberBuffer);
+          userIDs[usersCounter] = userID;
+
+          
+          writeLongToInternalEEPROM(userID);
+          delay(2000);
+          Serial.println("Data written to internal EEPROM.");
+          
+
+
+          // status("User ID");
+          // delay(2000);
+          //Fingerprint scan and store
+          //change status
+          while(!enroll());
+          usersCounter++;
+          EEPROM.write(count_address,usersCounter);
+            EEPROM.commit(); // Commit the changes to the EEPROM
+
+          status("Finger print added");
+          clearBuffer();
+          currentMode = NORMAL_MODE;
+       
+        break;
+        case DEL_MODE:
+        //print on screen add mode
+        status("Delete mode");
+        delay(200);
+        //print on screen Enter password
+       
+        if(currentMode != DEL_MODE)
+        {
+          break;
+        }
+        //check if first 4 characters of password are correct and if they are correct then proceed
+       
+          clearBuffer();
+          //get id
+          status("Enter ID");
+          touch_input();
+          if(currentMode != DEL_MODE)
+          {
+            status("");
+            break;
+          }
+          userID = atoi(numberBuffer);
+           index = findIndex(userID);
+           EEPROM.write(index,0);
+           EEPROM.commit();
+           delay(500);
+          deleteFingerprint(index+1);
+          //status("Finger print removed");
+          currentMode = NORMAL_MODE;
+       
+        break;
+
+      case SCAN_MODE:
+        //print on screen Scan mode
+        status("Scan mode");
+        delay(200);
+        //print on screen Enter password
+        clearBuffer();
+        //Check scan
+        while(!checkFingerPrint());
+        
+        // Send POST request to Google Apps Script
+            
+            http.begin(scriptUrl);
+            http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+            // Construct the request body with the card ID
+             postData = "card_id=" + String(cardId);
+
+            if(cardId > 0)
+            {
+            // Send the POST request
+             httpResponseCode = http.POST(postData);
+            
+            if (httpResponseCode > 0) {
+                status("HTTP POST successful");
+                status("Attendance Marked");
+                delay(500);
+                status("");
+              Serial.println("HTTP POST successful");
+              Serial.print("Response Code: ");
+              Serial.println(httpResponseCode);
+              
+            } else {
+                status("Attendance failed");
+                delay(500);
+                status("Try Again");
+                delay(500);
+                status("");
+              Serial.println("HTTP POST failed");
+              Serial.print("Error Code: ");
+              Serial.println(httpResponseCode);
+            }
+            }
+
+            http.end();
+
+        currentMode = NORMAL_MODE;
+      
+      break;
+      //break 
+  
+    default:
+      currentMode = NORMAL_MODE;
+      break;
+
+  }
+        // Check for touchscreen input to change the mode
+    
+}
+
+
+//---------------------------------------------------------------------------
+
+void drawKeypad()
+{
+  // Draw the keys
+  for (uint8_t row = 0; row < 5; row++) {
+    for (uint8_t col = 0; col < 3; col++) {
+      uint8_t b = col + row * 3;
+
+      if (b < 3) tft.setFreeFont(LABEL1_FONT);
+      else tft.setFreeFont(LABEL2_FONT);
+
+      key[b].initButton(&tft, KEY_X + col * (KEY_W + KEY_SPACING_X),
+                        KEY_Y + row * (KEY_H + KEY_SPACING_Y), // x, y, w, h, outline, fill, text
+                        KEY_W, KEY_H, TFT_WHITE, keyColor[b], TFT_WHITE,
+                        keyLabel[b], KEY_TEXTSIZE);
+      key[b].drawButton();
+    }
+  }
+}
+//------------------------------------------------------------------------------------------
+void touch_input()
+{
+  while(1)
+  {
+
+
+  uint16_t t_x = 0, t_y = 0; // To store the touch coordinates
+
+  // Pressed will be set true is there is a valid touch on the screen
+  bool pressed = tft.getTouch(&t_x, &t_y);
+
+  // / Check if any key coordinate boxes contain the touch coordinates
+  for (uint8_t b = 0; b < 15; b++) {
+    if (pressed && key[b].contains(t_x, t_y)) {
+      key[b].press(true);  // tell the button it is pressed
+    } else {
+      key[b].press(false);  // tell the button it is NOT pressed
+    }
+  }
+
+  // Check if any key has changed state
+  for (uint8_t b = 0; b < 15; b++) {
+
+    if (b < 3) tft.setFreeFont(LABEL1_FONT);
+    else tft.setFreeFont(LABEL2_FONT);
+
+    if (key[b].justReleased()) key[b].drawButton();     // draw normal
+
+    if (key[b].justPressed()) {
+      key[b].drawButton(true);  // draw invert
+
+      // backspace
+      // if a numberpad button, append the relevant # to the numberBuffer
+      if (b >= 3 && b != 12) {
+        if (numberIndex < NUM_LEN) {
+          numberBuffer[numberIndex] = keyLabel[b][0];
+          numberIndex++;
+          numberBuffer[numberIndex] = 0; // zero terminate
+        }
+        status(""); // Clear the old status
+      }
+
+      if(b == 12)
+      {
+        numberBuffer[numberIndex] = 0;
+        if (numberIndex > 0) {
+          numberIndex--;
+          numberBuffer[numberIndex] = 0;//' ';
+        }
+        status(""); // Clear the old status
+      }
+      // Del button
+      if (b == 1) {
+        currentMode = DEL_MODE;
+        return;        
+      }
+      // Scan button
+      if (b == 2) {
+        currentMode = SCAN_MODE;
+        return;        
+      }
+      //Add Button
+      if (b == 0) {
+        currentMode = ADD_MODE;
+        return;        
+      }
+      // Ok button
+      if(b == 14)
+      {
+        return;
+      }
+      //-----
+     
+
+      // Update the number display field
+      tft.setTextDatum(TL_DATUM);        // Use top left corner as text coord datum
+      tft.setFreeFont(&FreeSans18pt7b);  // Choose a nicefont that fits box
+      tft.setTextColor(DISP_TCOLOR);     // Set the font colour
+
+      // Draw the string, the value returned is the width in pixels
+      int xwidth = tft.drawString(numberBuffer, DISP_X + 4, DISP_Y + 12);
+
+      // Now cover up the rest of the line up by drawing a black rectangle.  No flicker this way
+      // but it will not work with italic or oblique fonts due to character overlap.
+      tft.fillRect(DISP_X + 4 + xwidth, DISP_Y + 1, DISP_W - xwidth - 5, DISP_H - 2, TFT_BROWN);
+      if(checkWiFiConnection())
+      {
+        drawWiFiSignal();
+      }
+      delay(10); // UI debouncing
+    }
+  }
+  }
+
+}
+
+//----------------------------------------------------------------------------
+
+int touch_input_while_start()
+{
+  while(1)
+  {
+
+  uint16_t t_x = 0, t_y = 0; // To store the touch coordinates
+
+  // Pressed will be set true is there is a valid touch on the screen
+  bool pressed = tft.getTouch(&t_x, &t_y);
+
+  // / Check if any key coordinate boxes contain the touch coordinates
+  for (uint8_t b = 0; b < 15; b++) {
+    if (pressed && key[b].contains(t_x, t_y)) {
+      key[b].press(true);  // tell the button it is pressed
+    } else {
+      key[b].press(false);  // tell the button it is NOT pressed
+    }
+  }
+
+  // Check if any key has changed state
+  for (uint8_t b = 0; b < 15; b++) {
+
+    if (b < 3) tft.setFreeFont(LABEL1_FONT);
+    else tft.setFreeFont(LABEL2_FONT);
+
+    if (key[b].justReleased()) key[b].drawButton();     // draw normal
+
+    if (key[b].justPressed()) {
+      key[b].drawButton(true);  // draw invert
+
+      // backspace
+      // if a numberpad button, append the relevant # to the numberBuffer
+      if (b >= 3 && b != 12) {
+        if (numberIndex < NUM_LEN) {
+          numberBuffer[numberIndex] = keyLabel[b][0];
+          numberIndex++;
+          numberBuffer[numberIndex] = 0; // zero terminate
+        }
+        status(""); // Clear the old status
+      }
+
+      if(b == 12)
+      {
+        numberBuffer[numberIndex] = 0;
+        if (numberIndex > 0) {
+          numberIndex--;
+          numberBuffer[numberIndex] = 0;//' ';
+        }
+        status(""); // Clear the old status
+      }
+      // Del button
+      if (b == 1) {
+        currentMode = NORMAL_MODE;
+        return 1;        
+      }
+      // Scan button
+      if (b == 2) {
+        currentMode = NORMAL_MODE;
+        return 2;        
+      }
+      //Add Button
+      if (b == 0) {
+        currentMode = NORMAL_MODE;
+        return 3;        
+      }
+      // Ok button
+      if(b == 14)
+      {
+        return 0;
+      }
+      //-----
+     
+
+      // Update the number display field
+      tft.setTextDatum(TL_DATUM);        // Use top left corner as text coord datum
+      tft.setFreeFont(&FreeSans18pt7b);  // Choose a nicefont that fits box
+      tft.setTextColor(DISP_TCOLOR);     // Set the font colour
+
+      // Draw the string, the value returned is the width in pixels
+      int xwidth = tft.drawString(numberBuffer, DISP_X + 4, DISP_Y + 12);
+
+      // Now cover up the rest of the line up by drawing a black rectangle.  No flicker this way
+      // but it will not work with italic or oblique fonts due to character overlap.
+      tft.fillRect(DISP_X + 4 + xwidth, DISP_Y + 1, DISP_W - xwidth - 5, DISP_H - 2, TFT_BROWN);
+      if(checkWiFiConnection())
+      {
+        drawWiFiSignal();
+      }
+      delay(10); // UI debouncing
+    }
+  }
+  }
+
+}
+//------------------------------------------------------------------------------------------
+
+void clearBuffer()
+{
+  //clear buffer
+  numberIndex = 0; // Reset index to 0
+  numberBuffer[numberIndex] = 0; // Place null in buffer
+    // Draw the string, the value returned is the width in pixels
+  int xwidth = tft.drawString(numberBuffer, DISP_X + 4, DISP_Y + 12);
+  // Now cover up the rest of the line up by drawing a black rectangle.  No flicker this way
+  // but it will not work with italic or oblique fonts due to character overlap.
+  tft.fillRect(DISP_X + 4 + xwidth, DISP_Y + 1, DISP_W - xwidth - 5, DISP_H - 2, TFT_BROWN);
+}
+
+//------------------------------------------------------------------------------------------
+int enroll()
+{
+  int p;
+  status("Waiting for valid finger to enroll as #"); 
+  delay(1000);
+  //get image
+  while (p != FINGERPRINT_OK) {
+    p = finger.getImage();
+    switch (p) {
+    case FINGERPRINT_OK:
+      status("Image taken");
+      break;
+    case FINGERPRINT_NOFINGER:
+      status("No finger");
+      break;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      status("Communication error");
+      break;
+    case FINGERPRINT_IMAGEFAIL:
+      status("Imaging error");
+      break;
+    default:
+      status("Unknown error");
+      break;
+    }
+  }
+  
+  //Convert image
+  p = finger.image2Tz(1);
+  switch (p) {
+    case FINGERPRINT_OK:
+      status("Image converted");
+      break;
+    case FINGERPRINT_IMAGEMESS:
+      status("Image too messy");
+      return p;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      status("Communication error");
+      return p;
+    case FINGERPRINT_FEATUREFAIL:
+      status("Could not find fingerprint features");
+      return p;
+    case FINGERPRINT_INVALIDIMAGE:
+      status("Could not find fingerprint features");
+      return p;
+    default:
+      status("Unknown error");
+      return p;
+  }
+
+  status("Remove finger");
+  delay(2000);
+  p = 0;
+  while (p != FINGERPRINT_NOFINGER) {
+    p = finger.getImage();
+  }
+  p = -1;
+  status("Place same finger again");
+  while (p != FINGERPRINT_OK) {
+    p = finger.getImage();
+    switch (p) {
+    case FINGERPRINT_OK:
+      status("Image taken");
+      break;
+    case FINGERPRINT_NOFINGER:
+      status("No finger detected");
+      break;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      status("Communication error");
+      break;
+    case FINGERPRINT_IMAGEFAIL:
+      status("Imaging error");
+      break;
+    default:
+      status("Unknown error");
+      break;
+    }
+  }
+
+  // OK success!
+
+  p = finger.image2Tz(2);
+  switch (p) {
+    case FINGERPRINT_OK:
+      status("Image converted");
+      break;
+    case FINGERPRINT_IMAGEMESS:
+      status("Image too messy");
+      return p;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      status("Communication error");
+      return p;
+    case FINGERPRINT_FEATUREFAIL:
+      status("Could not find fingerprint features");
+      return p;
+    case FINGERPRINT_INVALIDIMAGE:
+      status("Could not find fingerprint features");
+      return p;
+    default:
+      status("Unknown error");
+      return p;
+  }
+
+  
+  // OK converted!
+  status("Creating model");
+
+  p = finger.createModel();
+  if (p == FINGERPRINT_OK) {
+    status("Prints matched!");
+  } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
+    status("Communication error");
+    return p;
+  } else if (p == FINGERPRINT_ENROLLMISMATCH) {
+    status("Fingerprints did not match");
+    return p;
+  } else {
+    status("Unknown error");
+    return p;
+  }
+
+  status("ID ");
+  p = finger.storeModel(usersCounter+1);
+
+
+  if (p == FINGERPRINT_OK) {
+    status("Stored!");
+  } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
+    status("Communication error");
+    return p;
+  } else if (p == FINGERPRINT_BADLOCATION) {
+    status("Could not store in that location");
+    return p;
+  } else if (p == FINGERPRINT_FLASHERR) {
+    status("Error writing to flash");
+    return p;
+  } else {
+    status("Unknown error");
+    return p;
+  }
+
+  return true;
+
+
+}
+//------------------------------------------------------------------------------------------
+int checkFingerPrint()
+{
+   cardId = 0;
+  int p = -1;
+  while(p != FINGERPRINT_OK)
+  {
+    p = finger.getImage();
+
+    switch (p) {
+      case FINGERPRINT_OK:
+        status("Image taken");
+        break;
+      case FINGERPRINT_NOFINGER:
+        status("No finger detected");
+        break;
+      case FINGERPRINT_PACKETRECIEVEERR:
+        status("Communication error");
+        break;
+      case FINGERPRINT_IMAGEFAIL:
+        status("Imaging error");
+        break;
+      default:
+        status("Unknown error");
+        break;
+    }    
+  }
+
+  // OK success!
+  p = finger.image2Tz();
+  switch (p) {
+    case FINGERPRINT_OK:
+      status("Image converted");
+      break;
+    case FINGERPRINT_IMAGEMESS:
+      status("Image too messy");
+      return p;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      status("Communication error");
+      return p;
+    case FINGERPRINT_FEATUREFAIL:
+      status("Could not find fingerprint features");
+      return p;
+    case FINGERPRINT_INVALIDIMAGE:
+      status("Could not find fingerprint features");
+      return p;
+    default:
+      status("Unknown error");
+      return p;
+  }
+  status("Searching for finger");
+  // OK converted!
+  p = finger.fingerSearch();
+  if (p == FINGERPRINT_OK) {
+    status("Found a print match!");
+  } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
+    status("Communication error");
+    return p;
+  } else if (p == FINGERPRINT_NOTFOUND) {
+    status("Did not find a match");
+    return p;
+  } else {
+    status("Unknown error");
+    return p;
+  }
+  // found a match!
+  status("Found ID #"); status(String(userIDs[finger.fingerID-1]).c_str());
+//String(userIDs[finger.fingerID-1]).c_str()
+  cardId=userIDs[finger.fingerID-1];
+
+
+  
+
+  return cardId;
+}
+//------------------------------------------------------------------------------------------
+uint8_t deleteFingerprint(uint8_t id) {
+  uint8_t p = -1;
+  
+  p = finger.deleteModel(id);
+
+  int index = findIndex(id);
+  
+
+
+  if (p == FINGERPRINT_OK) {
+    status("Deleted!");
+  } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
+    status("Communication error");
+  } else if (p == FINGERPRINT_BADLOCATION) {
+    status("Could not delete in that location");
+  } else if (p == FINGERPRINT_FLASHERR) {
+    status("Error writing to flash");
+  } else {
+    status("Unknown error");
+  }
+  return p;
+}
+//------------------------------------------------------------------------------------------
+void touch_calibrate()
+{
+  uint16_t calData[5];
+  uint8_t calDataOK = 0;
+
+  // check file system exists
+  if (!SPIFFS.begin()) {
+    Serial.println("Formating file system");
+    SPIFFS.format();
+    SPIFFS.begin();
+  }
+
+  // check if calibration file exists and size is correct
+  if (SPIFFS.exists(CALIBRATION_FILE)) {
+    if (REPEAT_CAL)
+    {
+      // Delete if we want to re-calibrate
+      SPIFFS.remove(CALIBRATION_FILE);
+    }
+    else
+    {
+      File f = SPIFFS.open(CALIBRATION_FILE, "r");
+      if (f) {
+        if (f.readBytes((char *)calData, 14) == 14)
+          calDataOK = 1;
+        f.close();
+      }
+    }
+  }
+
+  if (calDataOK && !REPEAT_CAL) {
+    // calibration data valid
+    tft.setTouch(calData);
+  } else {
+    // data not valid so recalibrate
+    tft.fillScreen(TFT_BLACK);
+    tft.setCursor(20, 0);
+    tft.setTextFont(2);
+    tft.setTextSize(1);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+    tft.println("Touch corners as indicated");
+
+    tft.setTextFont(1);
+    tft.println();
+
+    if (REPEAT_CAL) {
+      tft.setTextColor(TFT_RED, TFT_BLACK);
+      tft.println("Set REPEAT_CAL to false to stop this running again!");
+    }
+
+    tft.calibrateTouch(calData, TFT_MAGENTA, TFT_BLACK, 15);
+
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.println("Calibration complete!");
+
+    // store data
+    File f = SPIFFS.open(CALIBRATION_FILE, "w");
+    if (f) {
+      f.write((const unsigned char *)calData, 14);
+      f.close();
+    }
+  }
+}
+
+//------------------------------------------------------------------------------------------
+
+// Print something in the mini status bar
+void status(const char *msg) {
+  tft.setTextPadding(240);
+  //tft.setCursor(STATUS_X, STATUS_Y);
+  tft.setTextColor(TFT_BLACK, TFT_ORANGE);
+ // tft.setTextFont(1);
+   tft.setFreeFont(FF18);                 // Select the font
+
+  tft.setTextDatum(TC_DATUM);
+  //tft.setTextSize(2);
+  tft.drawString(msg, STATUS_X, STATUS_Y,GFXFF);
+}
+
+//------------------------------------------------------------------------------------------
+int findIndex(uint32_t uid)
+{
+  for(int i=0;i<TOTAL_NUM_OF_USERS;i++)
+  {
+    if(userIDs[i] == uid)
+    {
+      return i;
+    }
+  }
+  return 0;
+}
+//------------------------------------------------------------------------------------------
+
+void writeLongToInternalEEPROM( uint32_t data) {
+  for (int i = 0; i < sizeof(long); i++) {
+    EEPROM.write(currentAddress + i, byte(data >> (8 * i)));
+  }
+ 
+  EEPROM.commit(); // Commit the changes to the EEPROM
+  currentAddress += sizeof(long); // Increment the address for the next write
+  EEPROM.write(write_address,currentAddress);
+  EEPROM.commit(); // Commit the changes to the EEPROM
+
+
+}
+
+/*
+void readLongFromInternalEEPROM(int currentAddressRead) {
+  long data = 0;
+  int Counter=0;
+  
+  if(Counter < 128)
+  {
+
+  for (int R =0 ; R < sizeof(long) ; R++) {
+    userIDs[Counter] |= long(EEPROM.read(currentAddressRead + R)) << (8 * R);
+  }
+
+  Counter++;
+  currentAddressRead += sizeof(long); // Increment the address for the next write
+ 
+  
+}
+}
+*/
+
+void readAllDataFromEEPROM(uint32_t dataArray[], int arraySize) {
+ 
+  for (int i = 0; i < arraySize; i++) {
+    long data = 0;
+    for (int j = 0; j < sizeof(long); j++) {
+      dataArray[i] |= long(EEPROM.read(addressToRead + j)) << (8 * j);
+    }
+    
+    addressToRead += sizeof(long);
+  }
+}
